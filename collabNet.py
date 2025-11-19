@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Optional, Tuple, List
+from enum import Enum
 import matplotlib.pyplot as plt
 
 import torch
@@ -221,7 +222,11 @@ O resto segue a mesma logica anterior para
 def lerp(a: torch.Tensor, b: torch.Tensor, t: float) -> torch.Tensor:
     return (1.0 - t) * a + t * b
 
-
+class MutationMode(Enum):
+    Normal = 0
+    Out    = 1
+    Hidden = 2
+    
 class StackedLayer(nn.Module):
     """
     Representa um "bloco empilhado" que contém:
@@ -241,7 +246,7 @@ class StackedLayer(nn.Module):
         extra_dim: Optional[int] = None,
         prev_out_dim: Optional[int] = None,
         k_skip: float = 1.0,
-        mutation_mode: Optional[str] = None,
+        mutation_mode: Optional[MutationMode] = None,
         target_fn: Optional[nn.Module] = None,
         eta: float = 0.0,
         eta_increment: float = 0.001,
@@ -316,8 +321,10 @@ class StackedLayer(nn.Module):
     def step_eta(self):
         """Incrementa eta gradualmente até atingir 1.0"""
         if self.eta > 1.0: return
-        if self.mutation_mode is not None:
-            self.eta = min(1.0, self.eta + self.eta_increment * self.eta_multiplier)
+        eta = min(1.0, self.eta + self.eta_increment * self.eta_multiplier)
+        is_out = self.mutation_mode is MutationMode.Out
+        is_hidden = (self.mutation_mode is MutationMode.Hidden) and self.is_freezed
+        self.eta = eta if is_out or is_hidden else self.eta
     
     def accelerate_eta(self, factor: float = 2.0):
         """Aumenta a velocidade de incremento do eta (chamado quando nova camada é adicionada)"""
@@ -355,10 +362,10 @@ class StackedLayer(nn.Module):
         z = h_out + skip_contribution
 
         if self.target_fn and self.mutation_mode is not None:
-            if self.mutation_mode == "Out":
+            if self.mutation_mode is MutationMode.Out:
                 target_out = self.target_fn(z)
                 o = lerp(z, target_out, self.eta)
-            elif self.mutation_mode == "Hidden":
+            elif self.mutation_mode is MutationMode.Hidden:
                 if self.is_freezed:
                     target_out = self.target_fn(z)
                     o = lerp(z, target_out, self.eta)
@@ -388,11 +395,13 @@ class SAECollabNet(nn.Module):
         device: Optional[torch.device] = None,
         hidden_activation: Optional[nn.Module] = None,
         out_activation: Optional[nn.Module] = None,
+        accelerate_etas: bool = False
     ):
         super().__init__()
         self.device = device or torch.device("cpu")
         self.input_dim = input_dim
 
+        self.accelerate_etas = accelerate_etas
         self.layers = nn.ModuleList()
         self.hidden_dims: List[int] = []
         self.out_dims: List[int] = []
@@ -440,9 +449,10 @@ class SAECollabNet(nn.Module):
         Acelera o incremento de eta das camadas anteriores.
         """
 
-        for layer in self.layers:
-            if layer.mutation_mode is not None:
-                layer.accelerate_eta(accelerate_factor)
+        if self.accelerate_etas:
+            for layer in self.layers:
+                if layer.mutation_mode is not None:
+                    layer.accelerate_eta(accelerate_factor)
         
         if len(self.layers) > 0:
             last = self.layers[-1]
@@ -540,6 +550,16 @@ class SAECollabNet(nn.Module):
                     'mode': layer.mutation_mode
                 })
         return status
+    
+    def debug_eta_status(self):
+        status = self.get_eta_status()
+        for l_status in status:
+            print()
+            print("Layer: ",l_status["layer"])
+            print("eta: ",l_status["eta"])
+            print("multiplier: ",l_status["multiplier"])
+            print("mutation: ",l_status["mode"])
+            print()
 
 
 def demo_identity_preservation_collabnet():
@@ -560,7 +580,7 @@ def demo_identity_preservation_collabnet():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # cria rede base
-    net = CollabNet(
+    net = SAECollabNet(
         input_dim=in_dim,
         first_hidden=8,
         first_out=out_dim,
@@ -631,7 +651,7 @@ def demo_train_with_new_layer():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 1) Inicializa rede com a primeira camada
-    net = CollabNet(
+    net = SAECollabNet(
         input_dim=in_dim,
         first_hidden=6,
         first_out=out_dim,
