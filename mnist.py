@@ -1,4 +1,4 @@
-# mnist.py
+# mnist_collabnet.py
 import os
 import numpy as np
 import torch
@@ -7,53 +7,58 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, random_split
 import matplotlib.pyplot as plt
-from cpt import CollaborativeStack  # your cpt.py must be in same folder
 
-# Config
-seed = 0
-torch.manual_seed(seed)
-np.random.seed(seed)
+from collabNet import SAECollabNet
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device:", device)
 
-# Hyperparameters
+seed = 0
+torch.manual_seed(seed)
+np.random.seed(seed)
+
+# Hiperparametros
 input_dim = 28 * 28
 num_classes = 10
-batch_size = 128
+batch_size = 256
 initial_hid = 64
-new_branch_hid = 64
-max_epochs = 50              # overall training cap
-patience = 3
-min_delta = 5e-3
+new_branch_hid = 32
+extra_hid = 16
+max_epochs = 50
+patience = 5
+min_delta = 1e-3
 max_branches = 32
-lr_initial = 1e-3
+lr_initial = 5e-3
 lr_branch = lr_initial
 
-# Data
 data_dir = "./mnist_data"
 os.makedirs(data_dir, exist_ok=True)
 transform = transforms.Compose([transforms.ToTensor()])
 full_train = datasets.MNIST(data_dir, train=True, download=True, transform=transform)
 test_set = datasets.MNIST(data_dir, train=False, download=True, transform=transform)
 
-# split train -> train/val
 val_size = 5000
 train_size = len(full_train) - val_size
 train_set, val_set = random_split(full_train, [train_size, val_size], generator=torch.Generator().manual_seed(seed))
 
 train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=False)
-val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, drop_last=False)
-test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, drop_last=False)
+val_loader   = DataLoader(val_set, batch_size=batch_size, shuffle=False, drop_last=False)
+test_loader  = DataLoader(test_set, batch_size=batch_size, shuffle=False, drop_last=False)
 
-# Model
-model = CollaborativeStack(input_dim=input_dim, out_dim=num_classes, device=device)
-# add first branch
-model.add_branch(hid_dim=initial_hid, method="M1", extra_dim=0, k_identity=1.0)
+model = SAECollabNet(input_dim=input_dim, 
+                  first_hidden=initial_hid, 
+                  first_out=num_classes,
+                  hidden_activation=nn.GELU(), 
+                  out_activation=nn.Identity(),
+                  device=device
+                  )
 
-# Utility: evaluate on dataset (returns avg loss and accuracy)
-def evaluate(model, loader, criterion):
-    model.eval()
+current_top = 0               
+branches_added = 1
+history = {"train_loss": [], "val_loss": [], "val_acc": [], "branch_changes": []}
+
+def evaluate(net, loader, criterion):
+    net.eval()
     total_loss = 0.0
     total = 0
     correct = 0
@@ -61,8 +66,7 @@ def evaluate(model, loader, criterion):
         for xb, yb in loader:
             xb = xb.view(xb.size(0), -1).to(device)
             yb = yb.to(device)
-            outs = model.forward_until(xb, upto_layer=len(model.branches) - 1)
-            logits = outs[len(model.branches) - 1][0]
+            logits, _, _ = net.forward(xb)
             loss = criterion(logits, yb)
             total_loss += loss.item() * xb.size(0)
             preds = logits.argmax(dim=1)
@@ -70,23 +74,13 @@ def evaluate(model, loader, criterion):
             total += xb.size(0)
     return total_loss / total, correct / total
 
-# Start training state
-current_top = 0
-branches_added = 1
-history = {"train_loss": [], "val_loss": [], "val_acc": [], "branch_changes": []}
-
-# Prepare optimizer for initial branch
-# Freeze previous (none) and unfreeze target
-model._prepare_layer_flags(current_top, "Normal")
 params = [p for p in model.parameters() if p.requires_grad]
 optimizer = optim.Adam(params, lr=lr_initial)
 criterion = nn.CrossEntropyLoss()
 
-# Early-saturation tracking
 best_val_loss = float("inf")
 epochs_since_improve = 0
 
-# Training loop
 for epoch in range(1, max_epochs + 1):
     model.train()
     running_loss = 0.0
@@ -95,24 +89,17 @@ for epoch in range(1, max_epochs + 1):
         xb = xb.view(xb.size(0), -1).to(device)
         yb = yb.to(device)
 
-        # forward up to current top
-        outs = model.forward_until(xb, upto_layer=current_top)
-        logits = outs[current_top][0]
+        logits, _, _ = model.forward(xb)
         loss = criterion(logits, yb)
 
         optimizer.zero_grad()
         loss.backward()
-
-        # project grads for frozen parts (if any)
-        # apply projection for layers up to current_top (only top may have flags)
-        for i, layer in enumerate(model.branches[: current_top + 1]):
-            layer.project_gradients()
-
         optimizer.step()
 
         running_loss += loss.item() * xb.size(0)
         n_samples += xb.size(0)
-
+        
+    model.step_all_etas()
     train_loss = running_loss / n_samples
     val_loss, val_acc = evaluate(model, val_loader, criterion)
 
@@ -120,66 +107,70 @@ for epoch in range(1, max_epochs + 1):
     history["val_loss"].append(val_loss)
     history["val_acc"].append(val_acc)
 
-    print(f"Epoch {epoch} | Branch {current_top} | train loss {train_loss:.4f} | val loss {val_loss:.4f} | val acc {val_acc:.4f}")
+    print(f"Epoch {epoch} | Layer {current_top} | train loss {train_loss:.4f} | val loss {val_loss:.4f} | val acc {val_acc:.4f}")
 
-    # check improvement
     if val_loss + min_delta < best_val_loss:
         best_val_loss = val_loss
         epochs_since_improve = 0
     else:
         epochs_since_improve += 1
 
-    # Branch-add condition
     if epochs_since_improve >= patience and branches_added < max_branches:
-        print(f"Validation loss saturated for {epochs_since_improve} epochs. Adding new branch.")
-        # add branch
-        new_layer = model.add_branch(
-			hid_dim=new_branch_hid,
-			method="M4",      # adds extra branch + learnable k
-			extra_dim=32,     # strong auxiliary path
-			k_identity=1.0
-		)
-        # force identity left-block to preserve behavior immediately
-        with torch.no_grad():
-            new_layer.W2.weight[:, :num_classes] = torch.eye(num_classes, device=new_layer.W2.weight.device)
+        print(f"Validation loss saturated for {epochs_since_improve} epochs. Adding new layer.")
+        model.add_layer(
+            hidden_dim=new_branch_hid,
+            out_dim=num_classes,
+            extra_dim=extra_hid,
+            k=1.0,
+            mutation_mode="Hidden",
+            target_fn=nn.GELU(),
+            eta=0.0,
+            eta_increment= 1/max_epochs,
+            hidden_activation=nn.GELU(),
+		    extra_activation=nn.Identity(),
+            out_activation=nn.Identity(),
+        )
 
-        # switch to train new branch only, freezing previous
-        current_top = len(model.branches) - 1
+        current_top = len(model.layers) - 1
         branches_added += 1
-        # prepare flags and optimizer
-        model._prepare_layer_flags(current_top, "ChangeOut")
+
         params = [p for p in model.parameters() if p.requires_grad]
         optimizer = optim.Adam(params, lr=lr_branch)
 
-        # log branch change moment
-        history["branch_changes"].append({"epoch": epoch, "new_branch": current_top})
-        # reset patience tracking
+        history["branch_changes"].append({"epoch": epoch, "new_layer": current_top})
         best_val_loss = float("inf")
         epochs_since_improve = 0
 
-    # optional stopping if val loss low and no more branches desired
     if epoch == max_epochs:
         print("Reached max epochs.")
 
-# Final evaluation on test
-test_loss, test_acc = evaluate(model, test_loader, criterion)
-print(f"TEST: loss {test_loss:.4f}, acc {test_acc:.4f}")
+save_path = "mnist_collabnet_state.pth"
+torch.save(model,save_path)
+print(f"Model state_dict saved to {save_path}")
 
-save_path = "mnist_collabnet.pth"
-torch.save(model, save_path)
-print(f"Model saved to {save_path}")
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
-# Plot loss and branch change markers
-plt.figure(figsize=(10,5))
-plt.plot(history["train_loss"], label="train loss")
-plt.plot(history["val_loss"], label="val loss")
-for bc in history["branch_changes"]:
-    e = bc["epoch"] - 1  # 0-index for plotting
-    plt.axvline(e, color="red", linestyle="--", alpha=0.7)
-    plt.text(e+0.2, max(history["val_loss"])*0.95, f"branch {bc['new_branch']}", rotation=90, color="red")
-plt.xlabel("Epoch")
-plt.ylabel("Loss")
-plt.legend()
-plt.grid(True)
+ax1.plot(history["train_loss"], label="Train Loss", color="tab:blue")
+ax1.plot(history["val_loss"], label="Val Loss", color="tab:orange")
+ax1.set_ylabel("Loss")
+ax1.legend()
+ax1.grid(True)
+
+val_acc_percent = [v * 100 for v in history["val_acc"]]
+ax2.plot(val_acc_percent, label="Val Accuracy (%)", color="tab:green")
+ax2.set_xlabel("Epoch")
+ax2.set_ylabel("Accuracy (%)")
+ax2.legend()
+ax2.grid(True)
+
+# MARCANDO AS EPOCAS EM QUE CAMADAS FORAM ADICIONADAS
+if history["branch_changes"]:
+    vmax = max(history["val_loss"]) if len(history["val_loss"]) > 0 else 1.0
+    for bc in history["branch_changes"]:
+        e = bc["epoch"] - 1
+        ax1.axvline(e, color="red", linestyle="--", alpha=0.7)
+        ax2.axvline(e, color="red", linestyle="--", alpha=0.7)
+        ax1.text(e + 0.3, vmax * 0.95, f"layer {bc['new_layer']}", rotation=90, color="red", fontsize=8)
+
 plt.tight_layout()
 plt.show()

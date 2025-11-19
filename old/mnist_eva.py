@@ -1,14 +1,14 @@
 import torch
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
-from cpt import CollaborativeStack
+from old.cpt import CollaborativeStack
 import torch.nn as nn
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # load MNIST test set
 transform = transforms.Compose([transforms.ToTensor()])
-test_set = datasets.MNIST("./mnist_data", train=False, download=True, transform=transform)
+test_set = datasets.MNIST("../mnist_data", train=False, download=True, transform=transform)
 test_loader = DataLoader(test_set, batch_size=256, shuffle=False)
 
 # load the saved model

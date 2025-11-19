@@ -1,6 +1,4 @@
 # collaborative_stack.py
-import copy
-import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -426,9 +424,9 @@ def demo_identity_preservation():
 
 def demo_train_with_new_branch():
     print("Demo: train with new branch improves MSE on simple regression")
-    N = 500
-    in_dim = 3
-    out_dim = 1
+    N = 10900
+    in_dim = 20
+    out_dim = 5
     X = np.random.randn(N, in_dim).astype(np.float32)
     W_true = np.array([[2.0], [-1.0], [0.5]], dtype=np.float32)
     Y = (X.dot(W_true) + 0.1 * np.random.randn(N, 1)).astype(np.float32)
