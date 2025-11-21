@@ -38,7 +38,7 @@ if __name__ == "__main__":
     # HYPERPARAMETERS
     seed = 0
     max_epochs = 100
-    num_of_branchs = 10
+    num_of_branchs = 8
     insert_epoch_mod = max_epochs // num_of_branchs
 
     lr_initial = 1e-4
@@ -48,17 +48,17 @@ if __name__ == "__main__":
     num_classes = 10
     batch_size = 512
 
-    initial_hid = 64
-    new_branch_hid = 16
+    initial_hid = 256
+    new_branch_hid = 128
     extra_hid = 64
     standard_hid = new_branch_hid + extra_hid
 
     # ACTIVATION FUNCTIONS
     hidden_activation = nn.GELU()
     out_activation    = nn.Identity()
-    extra_activation  = nn.Identity()
+    extra_activation  = nn.Sigmoid()
     mutation_mode     = MutationMode.Hidden
-    target_activation = nn.SELU()
+    target_activation = nn.GELU()
 
     # DEVICE SETTING
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
