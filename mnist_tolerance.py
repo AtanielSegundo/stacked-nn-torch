@@ -19,15 +19,17 @@ np.random.seed(seed)
 # Hiperparametros
 input_dim = 28 * 28
 num_classes = 10
+
 batch_size = 256
-initial_hid = 64
-new_branch_hid = 32
+initial_hid = 32
+new_branch_hid = 16
 extra_hid = 16
+
 max_epochs = 50
-patience = 5
+patience = 3
 min_delta = 1e-3
 max_branches = 32
-lr_initial = 5e-3
+lr_initial = 5e-4
 lr_branch = lr_initial
 
 data_dir = "./mnist_data"
@@ -160,7 +162,7 @@ for epoch in range(1, max_epochs + 1):
             out_dim=num_classes,
             extra_dim=extra_hid,
             k=1.0,
-            mutation_mode=MutationMode.Out,
+            mutation_mode=MutationMode.Hidden,
             target_fn=nn.GELU(),
             eta=0.0,
             eta_increment= 1/max_epochs,

@@ -42,14 +42,14 @@ if __name__ == "__main__":
     insert_epoch_mod = max_epochs // num_of_branchs
 
     lr_initial = 1e-4
-    lr_branch  = 5e-4
+    lr_branch  = 1e-4
 
     input_dim = 28 * 28
     num_classes = 10
-    batch_size = 512
+    batch_size = 256
 
-    initial_hid = 256
-    new_branch_hid = 128
+    initial_hid = 128
+    new_branch_hid = 32
     extra_hid = 64
     standard_hid = new_branch_hid + extra_hid
 
