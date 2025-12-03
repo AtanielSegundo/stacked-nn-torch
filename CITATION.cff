@@ -1,16 +1,15 @@
 cff-version: 1.2.0
 message: "Se você usar este código, cite da seguinte forma:"
 authors:
+  - family-names: Silva Santos
+    given-names: Ataniel Segundo
   - family-names: Viana
     given-names: Francisco dos Santos
     orcid: https://orcid.org/0000-0001-6912-8449
-  - family-names: Silva Santos
-    given-names: Ataniel Segundo
-    orcid: https://orcid.org/0000-0003-4549-8917
   - family-names: Souza e Silva
     given-names: Almir Neto
 title: >
   SAECollabNet Pytorch Implementation
 version: 1.0.0
-date-released: 2025-11-28
+date-released: 2025-12-03
 url: https://github.com/AtanielSegundo/stacked-nn-torch.git
