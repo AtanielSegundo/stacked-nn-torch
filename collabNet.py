@@ -228,9 +228,9 @@ class MutationMode(Enum):
     Hidden = 2
     
 # CLASS LIKE AN TAGGED STRUCTURE WITH AN GENERIC TYPE ASSOCIATED
-from typing import _T
+from typing import Any
 class LayersConfig:
-    def __init__(self,hidden:_T,out:_T,extra:_T):
+    def __init__(self,hidden:Any,out:Any,extra:Any):
         self.hidden = hidden
         self.out    = out
         self.extra  = extra
