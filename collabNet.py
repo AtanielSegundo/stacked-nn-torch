@@ -227,6 +227,14 @@ class MutationMode(Enum):
     Out    = 1
     Hidden = 2
     
+# CLASS LIKE AN TAGGED STRUCTURE WITH AN GENERIC TYPE ASSOCIATED
+from typing import _T
+class LayersConfig:
+    def __init__(self,hidden:_T,out:_T,extra:_T):
+        self.hidden = hidden
+        self.out    = out
+        self.extra  = extra
+
 class StackedLayer(nn.Module):
     """
     Representa um "bloco empilhado" que contém:
@@ -256,6 +264,7 @@ class StackedLayer(nn.Module):
         is_first: bool = False,
         is_k_trainable=True,
         device: Optional[torch.device] = None,
+        layer_use_bias:LayersConfig = None
     ):
         super().__init__()
         self.device = device or torch.device("cpu")
@@ -267,17 +276,22 @@ class StackedLayer(nn.Module):
         self.is_first     = is_first
         self.is_freezed   = False
 
+        self.layer_use_bias    = layer_use_bias or LayersConfig(True,True,True) 
         self.hidden_activation = hidden_activation or nn.Identity()
         self.out_activation    = out_activation or nn.Identity()
         self.extra_activation  = extra_activation or nn.Identity()
 
-        self.linear_hidden = nn.Linear(input_dim, hidden_dim, bias=True)
-        self.linear_out    = nn.Linear(hidden_dim, out_dim, bias=True)
+        self.linear_hidden = nn.Linear(input_dim, hidden_dim, 
+                                       bias=self.layer_use_bias.hidden)
+        self.linear_out    = nn.Linear(hidden_dim, out_dim, 
+                                       bias=self.layer_use_bias.out)
 
         if extra_dim is not None and original_input_dim is not None: 
             self.use_extra       = True
-            self.extra_in        = nn.Linear(original_input_dim, extra_dim, bias=True)
-            self.extra_to_hidden = nn.Linear(extra_dim, hidden_dim, bias=True)
+            self.extra_in        = nn.Linear(original_input_dim, extra_dim, 
+                                             bias=self.layer_use_bias.extra)
+            self.extra_to_hidden = nn.Linear(extra_dim, hidden_dim, 
+                                             bias=self.layer_use_bias.extra)
         else: 
             self.use_extra       = False
             self.extra_in        = None
@@ -285,7 +299,8 @@ class StackedLayer(nn.Module):
 
         if prev_out_dim is not None and not is_first: 
             self.use_skip    = True
-            self.linear_skip = nn.Linear(prev_out_dim, out_dim, bias=True)
+            self.linear_skip = nn.Linear(prev_out_dim, out_dim, 
+                                         bias=self.layer_use_bias.out)
         else: 
             self.use_skip    = False
             self.linear_skip = None
@@ -314,7 +329,7 @@ class StackedLayer(nn.Module):
                         self.linear_skip.weight[i, i] = k_skip
                     if not is_k_trainable:
                         self.linear_skip.weight.requires_grad = False
-                        self.linear_skip.bias.requires_grad = False
+                        self.linear_skip.bias.requires_grad   = False
 
         self.to(self.device)
 
