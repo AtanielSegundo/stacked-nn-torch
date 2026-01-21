@@ -281,6 +281,7 @@ class StackedLayer(nn.Module):
         self.out_activation    = out_activation or nn.Identity()
         self.extra_activation  = extra_activation or nn.Identity()
 
+        # print("Input dim= ",input_dim,"Hidden dim= ",hidden_dim)
         self.linear_hidden = nn.Linear(input_dim, hidden_dim, 
                                        bias=self.layer_use_bias.hidden)
         self.linear_out    = nn.Linear(hidden_dim, out_dim, 
@@ -375,19 +376,15 @@ class StackedLayer(nn.Module):
             skip_contribution = 0
 
         z = h_out + skip_contribution
-
+        
+        o = z
         if self.target_fn and self.mutation_mode is not None:
             if self.mutation_mode is MutationMode.Out:
                 target_out = self.target_fn(z)
                 o = lerp(z, target_out, self.eta)
-            elif self.mutation_mode is MutationMode.Hidden:
-                if self.is_freezed:
-                    target_out = self.target_fn(z)
-                    o = lerp(z, target_out, self.eta)
-                else:
-                    o = z
-        else:
-            o = z
+            elif self.mutation_mode is MutationMode.Hidden and self.is_freezed:
+                target_out = self.target_fn(z)
+                o = lerp(z, target_out, self.eta)
 
         return h_activated, o
     
@@ -407,10 +404,11 @@ class SAECollabNet(nn.Module):
         first_hidden: int,
         first_out: int,
         *,
-        device: Optional[torch.device] = None,
-        hidden_activation: Optional[nn.Module] = None,
-        out_activation: Optional[nn.Module] = None,
-        accelerate_etas: bool = False
+        device           : Optional[torch.device] = None,
+        hidden_activation: Optional[nn.Module]    = None,
+        out_activation   : Optional[nn.Module]    = None,
+        accelerate_etas  : bool                   = False,
+        use_bias         : LayersConfig           = None
     ):
         super().__init__()
         self.device = device or torch.device("cpu")
@@ -420,6 +418,8 @@ class SAECollabNet(nn.Module):
         self.layers = nn.ModuleList()
         self.hidden_dims: List[int] = []
         self.out_dims: List[int] = []
+
+        use_bias = use_bias or LayersConfig(True,True,True)
 
         # create first layer
         first = StackedLayer(
@@ -436,6 +436,7 @@ class SAECollabNet(nn.Module):
             mutation_mode=None,
             target_fn=None,
             eta=0.0,
+            layer_use_bias=use_bias
         )
         self.layers.append(first)
         self.hidden_dims.append(first_hidden)
@@ -447,22 +448,25 @@ class SAECollabNet(nn.Module):
         hidden_dim: int,
         out_dim: int,
         *,
-        extra_dim: Optional[int] = None,
+        extra_dim    : Optional[int]       = None,
+        mutation_mode: Optional[MutationMode] = None,
+        target_fn    : Optional[nn.Module] = None,
         k: float = 1.0,
-        mutation_mode: Optional[str] = None,
-        target_fn: Optional[nn.Module] = None,
         eta: float = 0.0,
+        accelerate_factor: float = 2.0,
         eta_increment: float = 0.001,
         hidden_activation: Optional[nn.Module] = None,
-        out_activation: Optional[nn.Module] = None,
-        extra_activation: Optional[nn.Module] = None,
-        accelerate_factor: float = 2.0,
+        out_activation   : Optional[nn.Module] = None,
+        extra_activation : Optional[nn.Module] = None,
         is_k_trainable=True,
+        use_bias=None
     ):
         """
         Adiciona nova camada segundo a metodologia.
         Acelera o incremento de eta das camadas anteriores.
         """
+
+        use_bias = use_bias or LayersConfig(True,True,True)
 
         if self.accelerate_etas:
             for layer in self.layers:
@@ -501,6 +505,7 @@ class SAECollabNet(nn.Module):
             is_first=False,
             is_k_trainable=is_k_trainable,
             device=self.device,
+            layer_use_bias=use_bias
         )
 
         self.layers.append(layer)
