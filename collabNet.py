@@ -1,6 +1,8 @@
-import numpy as np
 from typing import Optional, Tuple, List
 from enum import Enum
+from dataclasses import dataclass
+
+import numpy as np
 import matplotlib.pyplot as plt
 
 import torch
@@ -268,6 +270,7 @@ class StackedLayer(nn.Module):
     ):
         super().__init__()
         self.device = device or torch.device("cpu")
+        self.is_k_trainable = is_k_trainable
 
         self.input_dim    = input_dim
         self.hidden_dim   = hidden_dim
@@ -392,7 +395,165 @@ class StackedLayer(nn.Module):
         self.is_freezed = True
         for p in self.parameters():
             p.requires_grad = False
+    
+    def unfreeze(self):
+        self.is_freezed = False
+        for p in self.parameters():
+            p.requires_grad = True
+        if self.use_skip and not self.is_k_trainable:
+            self.linear_skip.weight.requires_grad = False
+            if self.linear_skip.bias is not None:
+                self.linear_skip.bias.requires_grad = False
 
+@dataclass
+class NewLayerCfg:
+    hidden_dim       : int
+    out_dim          : int
+    extra_dim        : Optional[int] = None
+    mutation_mode    : Optional[MutationMode] = None
+    target_fn        : Optional[nn.Module] = None
+    k                : float = 1.0
+    eta              : float = 0.0
+    accelerate_factor: float = 2.0
+    eta_increment    : float = 0.001
+    hidden_activation: Optional[nn.Module] = None
+    out_activation   : Optional[nn.Module] = None
+    extra_activation : Optional[nn.Module] = None
+    is_k_trainable   : bool = True
+    use_bias:LayersConfig = None
+
+class ReservedSAECollabNet(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        reserved_layers_cfg : List[NewLayerCfg],
+        device           : Optional[torch.device] = None,
+        accelerate_etas  : bool                   = False,
+        acelerate_factor : float                  = 2.0
+    ):
+        super().__init__()
+        self.device           = device or torch.device("cpu")
+        self.input_dim        = input_dim
+        self.accelerate_etas  = accelerate_etas
+        self.acelerate_factor = acelerate_factor 
+        
+        self.layers          = nn.ModuleList()
+        self.hidden_dims: List[int] = []
+        self.out_dims   : List[int] = []
+
+        self.active_head = 0  
+        
+        self.reserve_layers(reserved_layers_cfg)
+        
+        for layer in self.layers[1:]:
+            layer.freeze()
+
+        self.to(self.device)
+
+    # The Number Of Layers Should Be 1 + N(New Branches) 
+    def reserve_layers(self,reserved_layers_cfg:List[NewLayerCfg]):
+        for idx,cfg in enumerate(reserved_layers_cfg):
+            input_dim = self.input_dim
+            if idx == 1:    
+                input_dim = self.hidden_dims[-1]
+            elif idx > 1:
+                prev_hidden = self.hidden_dims[-1]
+                prevprev_out = self.out_dims[-2]
+                input_dim = prev_hidden + prevprev_out
+            
+            prev_out_dim = self.out_dims[-1] if len(self.out_dims) > 0 else None
+
+            layer = StackedLayer(
+                input_dim          = input_dim,
+                hidden_dim         = cfg.hidden_dim,
+                out_dim            = cfg.out_dim,
+                original_input_dim = self.input_dim if cfg.extra_dim is not None else None,
+                extra_dim          = cfg.extra_dim,
+                prev_out_dim       = prev_out_dim,
+                k_skip             = cfg.k,
+                mutation_mode      = cfg.mutation_mode,
+                target_fn          = cfg.target_fn,
+                eta                = cfg.eta,
+                eta_increment      = cfg.eta_increment,
+                hidden_activation  = cfg.hidden_activation,
+                out_activation     = cfg.out_activation,
+                extra_activation   = cfg.extra_activation,
+                is_first           = (idx == 0),
+                is_k_trainable     = cfg.is_k_trainable,
+                device             = self.device,
+                layer_use_bias     = cfg.use_bias
+            )
+
+            self.layers.append(layer)
+            self.hidden_dims.append(cfg.hidden_dim)
+            self.out_dims.append(cfg.out_dim)
+
+    def use_next_layer(self):
+        if (n_act_h:=self.active_head+1) < len(self.layers):
+            self.layers[self.active_head].freeze()
+            self.active_head = n_act_h
+            self.layers[self.active_head].unfreeze()
+
+            if self.accelerate_etas:
+                for layer in self.layers[:self.active_head]:
+                    if layer.mutation_mode is not None:
+                        layer.accelerate_eta(self.accelerate_factor)
+        else:
+            print(f"[ERROR] Trying To Use Layer {n_act_h} Of {len(self.layers)}")
+    
+    def forward(self, x: torch.Tensor):
+        hs: List[torch.Tensor] = []
+        os: List[torch.Tensor] = []
+
+        # first layer: input is original x
+        h, o = self.layers[0](x, prev_o=None, original_x=None)
+        hs.append(h)
+        os.append(o)
+
+        for idx in range(1,(self.active_head+1)):
+            layer = self.layers[idx]
+
+            if idx == 1:
+                hidden_input = hs[-1]
+            else:
+                hidden_input = torch.cat([hs[-1], os[-2]], dim=1)
+            
+            prev_o = os[-1]  # O_{n-1} for skip connection
+            original_x = x if layer.use_extra else None
+
+            h, o = layer(hidden_input, prev_o=prev_o, original_x=original_x)
+            hs.append(h)
+            os.append(o)
+        
+        return os[-1], os, hs
+
+    def step_all_etas(self):
+        for layer in self.layers[:self.active_head]:
+            if layer.mutation_mode is not None:
+                layer.step_eta()
+    
+    def get_eta_status(self):
+        status = []
+        for idx, layer in enumerate(self.layers):
+            if layer.mutation_mode is not None:
+                status.append({
+                    'layer': idx,
+                    'eta': layer.eta,
+                    'multiplier': layer.eta_multiplier,
+                    'mode': layer.mutation_mode
+                })
+        return status
+    
+    def debug_eta_status(self):
+        status = self.get_eta_status()
+        for l_status in status:
+            print()
+            print("Layer: ",l_status["layer"])
+            print("eta: ",l_status["eta"])
+            print("multiplier: ",l_status["multiplier"])
+            print("mutation: ",l_status["mode"])
+            print()
+     
 
 class SAECollabNet(nn.Module):
     """
@@ -438,9 +599,11 @@ class SAECollabNet(nn.Module):
             eta=0.0,
             layer_use_bias=use_bias
         )
+
         self.layers.append(first)
         self.hidden_dims.append(first_hidden)
         self.out_dims.append(first_out)
+        
         self.to(self.device)
 
     def add_layer(
