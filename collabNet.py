@@ -429,13 +429,13 @@ class ReservedSAECollabNet(nn.Module):
         reserved_layers_cfg : List[NewLayerCfg],
         device           : Optional[torch.device] = None,
         accelerate_etas  : bool                   = False,
-        acelerate_factor : float                  = 2.0
+        accelerate_factor : float                  = 2.0
     ):
         super().__init__()
         self.device           = device or torch.device("cpu")
         self.input_dim        = input_dim
         self.accelerate_etas  = accelerate_etas
-        self.acelerate_factor = acelerate_factor 
+        self.accelerate_factor = accelerate_factor 
         
         self.layers          = nn.ModuleList()
         self.hidden_dims: List[int] = []
